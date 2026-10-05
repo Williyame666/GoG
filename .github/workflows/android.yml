@@ -1,7 +1,4 @@
-env:
-  ORG_GRADLE_PROJECT_maxParallelForks: 1
-  GRADLE_OPTS: -Dorg.gradle.daemon=false -Xmx512m
-name: Auto Reorganize and Build APK
+name: Generate Grid Overlay APK
 
 on:
   push:
@@ -13,50 +10,61 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Reorganize project structure automatically
+    - name: Generate Android Project from Scratch
       run: |
+        rm -rf *
         mkdir -p app/src/main/java/com/aren/gridoverlay
         mkdir -p app/src/main/res/layout
         mkdir -p app/src/main/res/values
-        mkdir -p gradle/wrapper
 
-        # انتقال کدهای جاوا
-        [ -f GridOverlayService.java ] && mv GridOverlayService.java app/src/main/java/com/aren/gridoverlay/
-        [ -f GridView.java ] && mv GridView.java app/src/main/java/com/aren/gridoverlay/
-        [ -f MainActivity.java ] && mv MainActivity.java app/src/main/java/com/aren/gridoverlay/
+        # 1. settings.gradle
+        cat << 'EOF' > settings.gradle
+        pluginManagement {
+            repositories {
+                google()
+                mavenCentral()
+                gradlePluginPortal()
+            }
+        }
+        dependencyResolutionManagement {
+            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+            repositories {
+                google()
+                mavenCentral()
+            }
+        }
+        rootProject.name = "GridOverlay"
+        include ':app'
+        EOF
 
-        # انتقال منابع و مانیفست
-        [ -f AndroidManifest.xml ] && mv AndroidManifest.xml app/src/main/
-        [ -f activity_main.xml ] && mv activity_main.xml app/src/main/res/layout/
-        [ -f colors.xml ] && mv colors.xml app/src/main/res/values/
-        [ -f strings.xml ] && mv strings.xml app/src/main/res/values/
-        [ -f styles.xml ] && mv styles.xml app/src/main/res/values/
+        # 2. build.gradle (Project)
+        cat << 'EOF' > build.gradle
+        plugins {
+            id 'com.android.application' version '8.1.1' apply false
+        }
+        EOF
 
-        # انتقال تنظیمات گریدل
-        [ -f gradle-wrapper.properties ] && mv gradle-wrapper.properties gradle/wrapper/
-        [ -f gradle-properties ] && mv gradle-properties gradle.properties
-        [ -f settings-gradle ] && mv settings-gradle settings.gradle
-        [ -f "build gradle" ] && mv "build gradle" build.gradle
+        # 3. gradle.properties
+        cat << 'EOF' > gradle.properties
+        org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+        android.useAndroidX=true
+        android.nonTransitiveRClass=true
+        EOF
 
-        # ایجاد خودکار app/build.gradle در صورت نبود
+        # 4. app/build.gradle
         cat << 'EOF' > app/build.gradle
         plugins {
             id 'com.android.application'
         }
-
         android {
             namespace 'com.aren.gridoverlay'
             compileSdk 34
-
             defaultConfig {
                 applicationId "com.aren.gridoverlay"
                 minSdk 26
@@ -64,11 +72,9 @@ jobs:
                 versionCode 1
                 versionName "1.0"
             }
-
             buildTypes {
                 release {
                     minifyEnabled false
-                    proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
                 }
             }
             compileOptions {
@@ -76,22 +82,390 @@ jobs:
                 targetCompatibility JavaVersion.VERSION_17
             }
         }
-
         dependencies {
             implementation 'androidx.appcompat:appcompat:1.6.1'
             implementation 'com.google.android.material:material:1.11.0'
         }
         EOF
 
-        chmod +x gradlew || true
+        # 5. AndroidManifest.xml
+        cat << 'EOF' > app/src/main/AndroidManifest.xml
+        <?xml version="1.0" encoding="utf-8"?>
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+            <application
+                android:allowBackup="true"
+                android:icon="@android:drawable/sym_def_app_icon"
+                android:label="@string/app_name"
+                android:theme="@style/Theme.GridOverlay">
+                <activity
+                    android:name=".MainActivity"
+                    android:exported="true">
+                    <intent-filter>
+                        <action android:name="android.intent.action.MAIN" />
+                        <category android:name="android.intent.category.LAUNCHER" />
+                    </intent-filter>
+                </activity>
+                <service
+                    android:name=".GridOverlayService"
+                    android:enabled="true"
+                    android:exported="false" />
+            </application>
+        </manifest>
+        EOF
+
+        # 6. Java Files
+        cat << 'EOF' > app/src/main/java/com/aren/gridoverlay/MainActivity.java
+        package com.aren.gridoverlay;
+
+        import android.content.Intent;
+        import android.net.Uri;
+        import android.os.Build;
+        import android.os.Bundle;
+        import android.provider.Settings;
+        import android.widget.Button;
+        import android.widget.SeekBar;
+        import android.widget.TextView;
+        import android.widget.Toast;
+        import androidx.appcompat.app.AppCompatActivity;
+
+        public class MainActivity extends AppCompatActivity {
+            private static final int OVERLAY_PERMISSION_REQ_CODE = 1234;
+            private SeekBar seekBarSpacing;
+            private TextView tvSpacingValue;
+            private Button btnStart, btnStop;
+
+            @Override
+            protected void onCreate(Bundle savedInstanceState) {
+                super.onCreate(savedInstanceState);
+                setContentView(R.layout.activity_main);
+
+                seekBarSpacing = findViewById(R.id.seekBarSpacing);
+                tvSpacingValue = findViewById(R.id.tvSpacingValue);
+                btnStart = findViewById(R.id.btnStart);
+                btnStop = findViewById(R.id.btnStop);
+
+                checkOverlayPermission();
+
+                seekBarSpacing.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                        int spacing = Math.max(20, progress);
+                        tvSpacingValue.setText("Grid Spacing: " + spacing + " dp");
+                        if (fromUser) {
+                            Intent intent = new Intent(MainActivity.this, GridOverlayService.class);
+                            intent.setAction(GridOverlayService.ACTION_UPDATE_SPACING);
+                            intent.putExtra(GridOverlayService.EXTRA_SPACING, spacing);
+                            startService(intent);
+                        }
+                    }
+                    @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+                    @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+                });
+
+                btnStart.setOnClickListener(v -> {
+                    if (checkOverlayPermission()) {
+                        Intent intent = new Intent(MainActivity.this, GridOverlayService.class);
+                        intent.setAction(GridOverlayService.ACTION_START);
+                        intent.putExtra(GridOverlayService.EXTRA_SPACING, Math.max(20, seekBarSpacing.getProgress()));
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(intent);
+                        } else {
+                            startService(intent);
+                        }
+                    }
+                });
+
+                btnStop.setOnClickListener(v -> {
+                    Intent intent = new Intent(MainActivity.this, GridOverlayService.class);
+                    stopService(intent);
+                });
+            }
+
+            private boolean checkOverlayPermission() {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    if (!Settings.canDrawOverlays(this)) {
+                        Toast.makeText(this, "Please allow overlay permission", Toast.LENGTH_SHORT).show();
+                        Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:" + getPackageName()));
+                        startActivityForResult(intent, OVERLAY_PERMISSION_REQ_CODE);
+                        return false;
+                    }
+                }
+                return true;
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/aren/gridoverlay/GridView.java
+        package com.aren.gridoverlay;
+
+        import android.content.Context;
+        import android.graphics.Canvas;
+        import android.graphics.Color;
+        import android.graphics.Paint;
+        import android.util.DisplayMetrics;
+        import android.view.View;
+
+        public class GridView extends View {
+            private Paint linePaint;
+            private int spacingPx = 100;
+
+            public GridView(Context context) {
+                super(context);
+                init();
+            }
+
+            private void init() {
+                linePaint = new Paint();
+                linePaint.setColor(Color.parseColor("#6600FF66")); // Green semi-transparent
+                linePaint.setStrokeWidth(2f);
+                linePaint.setStyle(Paint.Style.STROKE);
+                linePaint.setAntiAlias(true);
+            }
+
+            public void setSpacingDp(int dp) {
+                DisplayMetrics metrics = getResources().getDisplayMetrics();
+                this.spacingPx = (int) (dp * metrics.density);
+                invalidate();
+            }
+
+            @Override
+            protected void onDraw(Canvas canvas) {
+                super.onDraw(canvas);
+                int width = getWidth();
+                int height = getHeight();
+
+                if (spacingPx <= 0) return;
+
+                // Draw Vertical Lines
+                for (int x = 0; x <= width; x += spacingPx) {
+                    canvas.drawLine(x, 0, x, height, linePaint);
+                }
+
+                // Draw Horizontal Lines
+                for (int y = 0; y <= height; y += spacingPx) {
+                    canvas.drawLine(0, y, width, y, linePaint);
+                }
+
+                // Draw Diagonal Lines (Top-Left to Bottom-Right & Top-Right to Bottom-Left)
+                int maxDim = Math.max(width, height) * 2;
+                for (int offset = -maxDim; offset <= maxDim; offset += spacingPx) {
+                    canvas.drawLine(offset, 0, offset + height, height, linePaint);
+                    canvas.drawLine(offset, height, offset + height, 0, linePaint);
+                }
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/aren/gridoverlay/GridOverlayService.java
+        package com.aren.gridoverlay;
+
+        import android.app.Notification;
+        import android.app.NotificationChannel;
+        import android.app.NotificationManager;
+        import android.app.Service;
+        import android.content.Context;
+        import android.content.Intent;
+        import android.graphics.Color;
+        import android.graphics.PixelFormat;
+        import android.os.Build;
+        import android.os.IBinder;
+        import android.view.Gravity;
+        import android.view.View;
+        import android.view.WindowManager;
+        import android.widget.Button;
+        import androidx.core.app.NotificationCompat;
+
+        public class GridOverlayService extends Service {
+            public static final String ACTION_START = "ACTION_START";
+            public static final String ACTION_UPDATE_SPACING = "ACTION_UPDATE_SPACING";
+            public static final String EXTRA_SPACING = "EXTRA_SPACING";
+
+            private WindowManager windowManager;
+            private GridView gridView;
+            private Button toggleButton;
+            private boolean isGridVisible = true;
+
+            @Override
+            public void onCreate() {
+                super.onCreate();
+                windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+                startForegroundNotification();
+                initViews();
+            }
+
+            private void startForegroundNotification() {
+                String CHANNEL_ID = "GridOverlayServiceChannel";
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    NotificationChannel channel = new NotificationChannel(
+                            CHANNEL_ID,
+                            "Grid Overlay Service",
+                            NotificationManager.IMPORTANCE_LOW
+                    );
+                    NotificationManager manager = getSystemService(NotificationManager.class);
+                    if (manager != null) manager.createNotificationChannel(channel);
+                }
+
+                Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+                        .setContentTitle("Grid Overlay Active")
+                        .setContentText("Tap toggle to show/hide")
+                        .setSmallIcon(android.R.drawable.ic_menu_view)
+                        .build();
+
+                startForeground(1, notification);
+            }
+
+            private void initViews() {
+                int layoutFlag = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                        ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                        : WindowManager.LayoutParams.TYPE_PHONE;
+
+                // 1. Grid View (Fully NOT TOUCHABLE)
+                WindowManager.LayoutParams gridParams = new WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.MATCH_PARENT,
+                        WindowManager.LayoutParams.MATCH_PARENT,
+                        layoutFlag,
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                        PixelFormat.TRANSLUCENT
+                );
+                gridView = new GridView(this);
+                windowManager.addView(gridView, gridParams);
+
+                // 2. Floating Toggle Button (40dp, Top-Right, Touchable)
+                int btnSize = (int) (40 * getResources().getDisplayMetrics().density);
+                WindowManager.LayoutParams btnParams = new WindowManager.LayoutParams(
+                        btnSize, btnSize,
+                        layoutFlag,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                        PixelFormat.TRANSLUCENT
+                );
+                btnParams.gravity = Gravity.TOP | Gravity.END;
+                btnParams.x = 20;
+                btnParams.y = 80;
+
+                toggleButton = new Button(this);
+                toggleButton.setText("👁");
+                toggleButton.setTextColor(Color.WHITE);
+                toggleButton.setBackgroundColor(Color.parseColor("#88000000"));
+                toggleButton.setPadding(0, 0, 0, 0);
+
+                toggleButton.setOnClickListener(v -> {
+                    isGridVisible = !isGridVisible;
+                    gridView.setVisibility(isGridVisible ? View.VISIBLE : View.GONE);
+                });
+
+                windowManager.addView(toggleButton, btnParams);
+            }
+
+            @Override
+            public int onStartCommand(Intent intent, int flags, int startId) {
+                if (intent != null) {
+                    int spacing = intent.getIntExtra(EXTRA_SPACING, 50);
+                    if (gridView != null) {
+                        gridView.setSpacingDp(spacing);
+                    }
+                }
+                return START_STICKY;
+            }
+
+            @Override
+            public void onDestroy() {
+                super.onDestroy();
+                if (gridView != null) windowManager.removeView(gridView);
+                if (toggleButton != null) windowManager.removeView(toggleButton);
+            }
+
+            @Override
+            public IBinder onBind(Intent intent) {
+                return null;
+            }
+        }
+        EOF
+
+        # 7. Resources
+        cat << 'EOF' > app/src/main/res/layout/activity_main.xml
+        <?xml version="1.0" encoding="utf-8"?>
+        <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:padding="24dp"
+            android:gravity="center">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Grid Overlay by AREN"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="32dp" />
+
+            <TextView
+                android:id="@+id/tvSpacingValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Grid Spacing: 50 dp"
+                android:textSize="16sp"
+                android:layout_marginBottom="8dp" />
+
+            <SeekBar
+                android:id="@+id/seekBarSpacing"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="150"
+                android:progress="50"
+                android:layout_marginBottom="32dp" />
+
+            <Button
+                android:id="@+id/btnStart"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Start Overlay"
+                android:layout_marginBottom="12dp" />
+
+            <Button
+                android:id="@+id/btnStop"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Stop Overlay" />
+
+        </LinearLayout>
+        EOF
+
+        cat << 'EOF' > app/src/main/res/values/strings.xml
+        <resources>
+            <string name="app_name">Grid Overlay</string>
+        </resources>
+        EOF
+
+        cat << 'EOF' > app/src/main/res/values/colors.xml
+        <resources>
+            <color name="black">#FF000000</color>
+            <color name="white">#FFFFFFFF</color>
+        </resources>
+        EOF
+
+        cat << 'EOF' > app/src/main/res/values/styles.xml
+        <resources>
+            <style name="Theme.GridOverlay" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+                <item name="colorPrimary">#00E676</item>
+            </style>
+        </resources>
+        EOF
 
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.4'
 
-    - name: Build with Gradle
-      run: ./gradlew assembleDebug --stacktrace
+    - name: Build Debug APK
+      run: gradle assembleDebug --no-daemon
 
-    - name: Upload APK
+    - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
         name: GridOverlay-AREN-APK
