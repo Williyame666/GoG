@@ -1,3 +1,6 @@
+env:
+  ORG_GRADLE_PROJECT_maxParallelForks: 1
+  GRADLE_OPTS: -Dorg.gradle.daemon=false -Xmx512m
 name: Auto Reorganize and Build APK
 
 on:
