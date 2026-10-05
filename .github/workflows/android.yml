@@ -69,8 +69,8 @@ jobs:
                 applicationId "com.aren.gridoverlay"
                 minSdk 26
                 targetSdk 34
-                versionCode 1
-                versionName "1.0"
+                versionCode 2
+                versionName "1.1"
             }
             buildTypes {
                 release {
@@ -88,12 +88,15 @@ jobs:
         }
         EOF
 
-        # 5. AndroidManifest.xml
+        # 5. AndroidManifest.xml (Fixed for Android 14)
         cat << 'EOF' > app/src/main/AndroidManifest.xml
         <?xml version="1.0" encoding="utf-8"?>
         <manifest xmlns:android="http://schemas.android.com/apk/res/android">
             <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
             <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+            <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
             <application
                 android:allowBackup="true"
                 android:icon="@android:drawable/sym_def_app_icon"
@@ -109,8 +112,13 @@ jobs:
                 </activity>
                 <service
                     android:name=".GridOverlayService"
+                    android:foregroundServiceType="specialUse"
                     android:enabled="true"
-                    android:exported="false" />
+                    android:exported="false">
+                    <property
+                        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                        android:value="Overlay screen grid utility" />
+                </service>
             </application>
         </manifest>
         EOF
@@ -120,6 +128,7 @@ jobs:
         package com.aren.gridoverlay;
 
         import android.content.Intent;
+        import android.content.pm.PackageManager;
         import android.net.Uri;
         import android.os.Build;
         import android.os.Bundle;
@@ -129,6 +138,8 @@ jobs:
         import android.widget.TextView;
         import android.widget.Toast;
         import androidx.appcompat.app.AppCompatActivity;
+        import androidx.core.app.ActivityCompat;
+        import androidx.core.content.ContextCompat;
 
         public class MainActivity extends AppCompatActivity {
             private static final int OVERLAY_PERMISSION_REQ_CODE = 1234;
@@ -146,9 +157,11 @@ jobs:
                 btnStart = findViewById(R.id.btnStart);
                 btnStop = findViewById(R.id.btnStop);
 
-                checkOverlayPermission();
+                checkPermissions();
 
                 seekBarSpacing.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void事件(SeekBar seekBar, int progress, boolean fromUser) {}
                     @Override
                     public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                         int spacing = Math.max(20, progress);
@@ -165,7 +178,7 @@ jobs:
                 });
 
                 btnStart.setOnClickListener(v -> {
-                    if (checkOverlayPermission()) {
+                    if (checkPermissions()) {
                         Intent intent = new Intent(MainActivity.this, GridOverlayService.class);
                         intent.setAction(GridOverlayService.ACTION_START);
                         intent.putExtra(GridOverlayService.EXTRA_SPACING, Math.max(20, seekBarSpacing.getProgress()));
@@ -183,14 +196,20 @@ jobs:
                 });
             }
 
-            private boolean checkOverlayPermission() {
+            private boolean checkPermissions() {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     if (!Settings.canDrawOverlays(this)) {
-                        Toast.makeText(this, "Please allow overlay permission", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, "لطفاً دسترسی Overlay را فعال کنید", Toast.LENGTH_SHORT).show();
                         Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                                 Uri.parse("package:" + getPackageName()));
                         startActivityForResult(intent, OVERLAY_PERMISSION_REQ_CODE);
                         return false;
+                    }
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS)
+                            != PackageManager.PERMISSION_GRANTED) {
+                        ActivityCompat.requestPermissions(this, new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 101);
                     }
                 }
                 return true;
@@ -219,7 +238,7 @@ jobs:
 
             private void init() {
                 linePaint = new Paint();
-                linePaint.setColor(Color.parseColor("#6600FF66")); // Green semi-transparent
+                linePaint.setColor(Color.parseColor("#6600FF66")); // سبز نیمه‌شفاف
                 linePaint.setStrokeWidth(2f);
                 linePaint.setStyle(Paint.Style.STROKE);
                 linePaint.setAntiAlias(true);
@@ -239,17 +258,17 @@ jobs:
 
                 if (spacingPx <= 0) return;
 
-                // Draw Vertical Lines
+                // خطوط عمودی
                 for (int x = 0; x <= width; x += spacingPx) {
                     canvas.drawLine(x, 0, x, height, linePaint);
                 }
 
-                // Draw Horizontal Lines
+                // خطوط افقی
                 for (int y = 0; y <= height; y += spacingPx) {
                     canvas.drawLine(0, y, width, y, linePaint);
                 }
 
-                // Draw Diagonal Lines (Top-Left to Bottom-Right & Top-Right to Bottom-Left)
+                // خطوط مورب دوطرفه (الگوی ضربدری X)
                 int maxDim = Math.max(width, height) * 2;
                 for (int offset = -maxDim; offset <= maxDim; offset += spacingPx) {
                     canvas.drawLine(offset, 0, offset + height, height, linePaint);
@@ -266,8 +285,8 @@ jobs:
         import android.app.NotificationChannel;
         import android.app.NotificationManager;
         import android.app.Service;
-        import android.content.Context;
         import android.content.Intent;
+        import android.content.pm.ServiceInfo;
         import android.graphics.Color;
         import android.graphics.PixelFormat;
         import android.os.Build;
@@ -310,11 +329,16 @@ jobs:
 
                 Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                         .setContentTitle("Grid Overlay Active")
-                        .setContentText("Tap toggle to show/hide")
+                        .setContentText("Tap 👁 toggle to show/hide")
                         .setSmallIcon(android.R.drawable.ic_menu_view)
+                        .setPriority(NotificationCompat.PRIORITY_LOW)
                         .build();
 
-                startForeground(1, notification);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+                } else {
+                    startForeground(1, notification);
+                }
             }
 
             private void initViews() {
@@ -322,7 +346,7 @@ jobs:
                         ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                         : WindowManager.LayoutParams.TYPE_PHONE;
 
-                // 1. Grid View (Fully NOT TOUCHABLE)
+                // 1. Grid View (کاملاً لمس‌ناپذیر و ردکننده تاچ)
                 WindowManager.LayoutParams gridParams = new WindowManager.LayoutParams(
                         WindowManager.LayoutParams.MATCH_PARENT,
                         WindowManager.LayoutParams.MATCH_PARENT,
@@ -335,7 +359,7 @@ jobs:
                 gridView = new GridView(this);
                 windowManager.addView(gridView, gridParams);
 
-                // 2. Floating Toggle Button (40dp, Top-Right, Touchable)
+                // 2. دکمه شناور چشم (40dp، تاچ‌پذیر، ثابت گوشه راست بالا)
                 int btnSize = (int) (40 * getResources().getDisplayMetrics().density);
                 WindowManager.LayoutParams btnParams = new WindowManager.LayoutParams(
                         btnSize, btnSize,
@@ -344,12 +368,13 @@ jobs:
                         PixelFormat.TRANSLUCENT
                 );
                 btnParams.gravity = Gravity.TOP | Gravity.END;
-                btnParams.x = 20;
-                btnParams.y = 80;
+                btnParams.x = 30;
+                btnParams.y = 120;
 
                 toggleButton = new Button(this);
                 toggleButton.setText("👁");
                 toggleButton.setTextColor(Color.WHITE);
+                toggleButton.setTextSize(18f);
                 toggleButton.setBackgroundColor(Color.parseColor("#88000000"));
                 toggleButton.setPadding(0, 0, 0, 0);
 
